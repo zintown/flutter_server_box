@@ -567,7 +567,7 @@ final class TmuxControlClient {
     try {
       // Sent together: tmux pauses the pane before it runs the capture.
       result = (await Future.wait([
-        if (pause) runRequired("refresh-client -A $paneId:pause"),
+        if (pause) runRequired("refresh-client -A '$paneId:pause'"),
         runRequired(command),
       ])).last;
     } catch (error) {
@@ -635,7 +635,7 @@ final class TmuxControlClient {
 
   void _resumePaneOutput(TmuxPaneId paneId) {
     unawaited(
-      runRequired("refresh-client -A $paneId:continue").catchError((
+      runRequired("refresh-client -A '$paneId:continue'").catchError((
         Object error,
       ) {
         onCommandError?.call('refresh-client', error);
