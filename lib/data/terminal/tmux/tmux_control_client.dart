@@ -86,6 +86,7 @@ final class TmuxControlClient {
   Stream<TmuxControlSnapshot> get snapshots => _stateController.stream;
   Stream<TmuxControlPaneOutput> get paneOutput => _paneOutputController.stream;
   TmuxControlSnapshot? get snapshot => _snapshot;
+  bool get isClosed => _commands.isClosed;
 
   /// Waits for the command which launched the CC client, then builds the first
   /// snapshot and, by default, captures the active pane's existing screen.
@@ -173,12 +174,23 @@ final class TmuxControlClient {
   }
 
   Future<void> selectWindow(TmuxWindowId windowId) async {
-    await runRequired("select-window -t '$windowId'");
+    await runRequired('select-window -t $windowId');
     await refreshState(captureActivePane: true);
   }
 
   Future<void> selectPane(TmuxPaneId paneId) async {
-    await runRequired("select-pane -t '$paneId'");
+    final targetWindow = _snapshot?.paneWindows[paneId];
+    if (targetWindow != null && targetWindow != _snapshot?.activeWindowId) {
+      await runRequired('select-window -t $targetWindow');
+    }
+    await runRequired('select-pane -t $paneId');
+    await refreshState(captureActivePane: true);
+  }
+
+  Future<void> toggleZoom({TmuxPaneId? paneId}) async {
+    final target = paneId ?? _snapshot?.activePaneId;
+    if (target == null) return;
+    await runRequired('resize-pane -Z -t $target');
     await refreshState(captureActivePane: true);
   }
 
@@ -191,7 +203,7 @@ final class TmuxControlClient {
         activeWindow != null &&
         activeWindow.panes.length == 1 &&
         _snapshot?.windows.length == 1;
-    await _runRequiredUnlessClientEnded("kill-pane -t '$paneId'");
+    await _runRequiredUnlessClientEnded('kill-pane -t $paneId');
     if (!destroysSession) {
       await refreshState(captureActivePane: true);
     }
@@ -202,7 +214,7 @@ final class TmuxControlClient {
     final nameArg = name == null ? '' : ' -n ${quoteTmux(name)}';
     final command =
         "new-window -P -F '#{window_id}'"
-        "${target == null ? '' : " -t '$target'"}$nameArg";
+        "${target == null ? '' : " -t $target"}$nameArg";
     final result = await runRequired(command);
     final id = TmuxWindowId.tryParse(result.output.trim());
     if (id == null) {
@@ -218,7 +230,7 @@ final class TmuxControlClient {
     // answer `kill-window` and then immediately send `%exit`, so a refresh can
     // race the shutdown and turn a successful close into a spurious error.
     final destroysSession = _snapshot?.windows.length == 1;
-    await _runRequiredUnlessClientEnded("kill-window -t '$windowId'");
+    await _runRequiredUnlessClientEnded('kill-window -t $windowId');
     if (!destroysSession) {
       await refreshState(captureActivePane: true);
     }
@@ -249,7 +261,7 @@ final class TmuxControlClient {
   }
 
   Future<void> switchSession(TmuxSessionId sessionId) async {
-    await runRequired("switch-client -t '$sessionId'");
+    await runRequired('switch-client -t $sessionId');
     await refreshState(captureActivePane: true);
   }
 
@@ -409,7 +421,7 @@ final class TmuxControlClient {
       ),
       runRequired(
         "list-windows -F '#{window_id}\t#{window_index}"
-        "\t#{q:window_name}\t#{window_active}'",
+        "\t#{q:window_name}\t#{window_active}\t#{window_zoomed_flag}'",
       ),
       // Panes only of the active window: they exist to make splits
       // addressable in the UI, and inactive windows stay summaries until
@@ -484,7 +496,8 @@ final class TmuxControlClient {
       final parsed = _parsePane(line);
       if (parsed != null) panes.add(parsed);
     }
-    final activePane = panes.where((pane) => pane.active).firstOrNull;
+    final activePane =
+        panes.where((pane) => pane.active).firstOrNull ?? panes.firstOrNull;
     if (activePane == null) {
       throw TmuxControlCommandException(
         'list-panes',
@@ -506,6 +519,7 @@ final class TmuxControlClient {
       index: activeWindow.index,
       name: activeWindow.name,
       active: true,
+      zoomed: activeWindow.zoomed,
       panes: panes,
     );
     final windowsWithPanes = [
@@ -547,13 +561,13 @@ final class TmuxControlClient {
     // xterm, so replaying tmux history there would only throw lines away.
     final captureHistory = !mode.alternateScreen && effectiveHistoryLimit > 0;
     final command = captureHistory
-        ? "capture-pane -p -e -S -$effectiveHistoryLimit -t '$paneId'"
-        : "capture-pane -p -e -t '$paneId'";
+        ? "capture-pane -p -e -S -$effectiveHistoryLimit -t $paneId"
+        : "capture-pane -p -e -t $paneId";
     final TmuxControlCommandResult result;
     try {
       // Sent together: tmux pauses the pane before it runs the capture.
       result = (await Future.wait([
-        if (pause) runRequired("refresh-client -A '$paneId:pause'"),
+        if (pause) runRequired("refresh-client -A $paneId:pause"),
         runRequired(command),
       ])).last;
     } catch (error) {
@@ -621,7 +635,7 @@ final class TmuxControlClient {
 
   void _resumePaneOutput(TmuxPaneId paneId) {
     unawaited(
-      runRequired("refresh-client -A '$paneId:continue'").catchError((
+      runRequired("refresh-client -A $paneId:continue").catchError((
         Object error,
       ) {
         onCommandError?.call('refresh-client', error);
@@ -652,11 +666,14 @@ final class TmuxControlClient {
     final index = int.tryParse(unescapeTmuxField(fields[1]));
     final active = int.tryParse(unescapeTmuxField(fields[3]));
     if (id == null || index == null || active == null) return null;
+    final zoomed = fields.length > 4 &&
+        (int.tryParse(unescapeTmuxField(fields[4])) ?? 0) > 0;
     return TmuxControlWindow(
       id: id,
       index: index,
       name: unescapeTmuxField(fields[2]),
       active: active > 0,
+      zoomed: zoomed,
     );
   }
 

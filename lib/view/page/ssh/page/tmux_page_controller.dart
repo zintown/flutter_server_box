@@ -60,12 +60,14 @@ final class TmuxPageController {
   /// Drops the client without clearing the page-facing restore state.
   void detach() {
     if (_phase == TmuxPageLifecyclePhase.disposed) return;
-    if (_client == null) return;
+    final client = _client;
+    if (client == null) return;
     _phase = TmuxPageLifecyclePhase.detaching;
     _notifyPhaseChanged();
     unawaited(_snapshotSubscription?.cancel());
     _snapshotSubscription = null;
     _client = null;
+    unawaited(client.detach().whenComplete(client.dispose));
     _phase = TmuxPageLifecyclePhase.detached;
     _notifyPhaseChanged();
   }
@@ -97,8 +99,12 @@ final class TmuxPageController {
     _phase = TmuxPageLifecyclePhase.disposed;
     await _snapshotSubscription?.cancel();
     _snapshotSubscription = null;
-    await _client?.dispose();
+    final client = _client;
     _client = null;
+    if (client != null) {
+      await client.detach();
+      await client.dispose();
+    }
   }
 
   void _handleSnapshot(TmuxControlSnapshot snapshot) {
